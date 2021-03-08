@@ -35,8 +35,8 @@ def UTCTime(timedata):
     # time comes: 2014-05-30 20:11:27
     # should be formatted to 2014-05-30T20:11:17Z
     #
-    
-    return timedata.strftime("%Y-%m-%dT%H:%M:%SZ")
+    millis = int(round(timedata.microsecond/1000000,3) * 1000)
+    return timedata.strftime("%Y-%m-%dT%H:%M:%S.{:03}Z".format(millis))
 
 def generate_GPX(points, trk_name="exercise"):
 

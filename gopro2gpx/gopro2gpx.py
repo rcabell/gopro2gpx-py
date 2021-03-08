@@ -19,6 +19,7 @@ import sys
 import time
 from collections import namedtuple
 from datetime import datetime
+from pathlib import Path
 
 from .config import setup_environment
 from . import fourCC
@@ -26,7 +27,7 @@ from . import gpmf
 from . import gpshelper
 
 
-def BuildGPSPoints(data, skip=False):
+def BuildGPSPoints(data, skip=False, unrestricted=False):
     """
     Data comes UNSCALED so we have to do: Data / Scale.
     Do a finite state machine to process the labels.
@@ -46,9 +47,11 @@ def BuildGPSPoints(data, skip=False):
         'ok': 0,
         'badfix': 0,
         'badfixskip': 0,
-        'empty' : 0
+        'empty' : 0,
+        'duptime' : 0
     }
 
+    prev_ts = None
     GPSFIX = 0 # no lock.
     for d in data:
         
@@ -56,6 +59,13 @@ def BuildGPSPoints(data, skip=False):
             SCAL = d.data
         elif d.fourCC == 'GPSU':
             GPSU = d.data
+            next_ts = time.mktime(GPSU)
+            if next_ts == prev_ts:
+                print("Warning: Skipping duplicate timestamp")
+                stats['duptime'] += 1
+                continue
+            else:
+                prev_ts = next_ts
         elif d.fourCC == 'GPSF':
             if d.data != GPSFIX:
                 print("GPSFIX change to %s [%s]" % (d.data,fourCC.LabelGPSF.xlate[d.data]))
@@ -63,7 +73,7 @@ def BuildGPSPoints(data, skip=False):
         elif d.fourCC == 'GPS5':
             # we have to use the REPEAT value.
 
-            for item in d.data:
+            for i, item in enumerate(d.data):
 
                 if item.lon == item.lat == item.alt == 0:
                     print("Warning: Skipping empty point")
@@ -81,9 +91,12 @@ def BuildGPSPoints(data, skip=False):
                 
 
                 gpsdata = fourCC.GPSData._make(retdata)
-                p = gpshelper.GPSPoint(gpsdata.lat, gpsdata.lon, gpsdata.alt, datetime.fromtimestamp(time.mktime(GPSU)), gpsdata.speed)
+                fract_ts = next_ts + (1/len(d.data) * i)
+                p = gpshelper.GPSPoint(gpsdata.lat, gpsdata.lon, gpsdata.alt, datetime.fromtimestamp(fract_ts), gpsdata.speed)
                 points.append(p)
                 stats['ok'] += 1
+                if not unrestricted:
+                    break
 
         elif d.fourCC == 'SYST':
             data = [ float(x) / float(y) for x,y in zip( d.data._asdict().values() ,list(SCAL) ) ]
@@ -113,6 +126,9 @@ def BuildGPSPoints(data, skip=False):
                 p = gpshelper.GPSPoint(gpsdata.lat, gpsdata.lon, gpsdata.alt, datetime.fromtimestamp(SYST.miliseconds), gpsdata.speed)
                 points.append(p)
                 stats['ok'] += 1
+            
+        elif d.fourCC == 'ACCL':
+            print("Accel:", d.data)
 
 
 
@@ -124,6 +140,7 @@ def BuildGPSPoints(data, skip=False):
     print("- Ok:              %5d" % stats['ok'])
     print("- GPSFIX=0 (bad):  %5d (skipped: %d)" % (stats['badfix'], stats['badfixskip']))
     print("- Empty (No data): %5d" % stats['empty'])
+    print("- Duplicate times: %5d" % stats['duptime'])
     print("Total points:      %5d" % total_points)
     print("--------------------------")
     return(points)
@@ -133,6 +150,7 @@ def parseArgs():
     parser.add_argument("-v", "--verbose", help="increase output verbosity", action="count")
     parser.add_argument("-b", "--binary", help="read data from bin file", action="store_true")
     parser.add_argument("-s", "--skip", help="Skip bad points (GPSFIX=0)", action="store_true", default=False)
+    parser.add_argument("-u", "--unrestricted", help="Don't restrict to 1Hz GPS data", action="store_true", default=False)
     parser.add_argument("file", help="Video file or binary metadata dump")
     parser.add_argument("outputfile", help="output file. builds KML and GPX")
     args = parser.parse_args()
@@ -151,7 +169,7 @@ def main():
 
     # build some funky tracks from camera GPS
 
-    points = BuildGPSPoints(data, skip=args.skip)
+    points = BuildGPSPoints(data, skip=args.skip, unrestricted=args.unrestricted)
 
     if len(points) == 0:
         print("Can't create file. No GPS info in %s. Exitting" % args.file)
@@ -161,7 +179,7 @@ def main():
     with open("%s.kml" % args.outputfile , "w+") as fd:
         fd.write(kml)
 
-    gpx = gpshelper.generate_GPX(points, trk_name="gopro7-track")
+    gpx = gpshelper.generate_GPX(points, trk_name=Path(args.outputfile).name)
     with open("%s.gpx" % args.outputfile , "w+") as fd:
         fd.write(gpx)
 
